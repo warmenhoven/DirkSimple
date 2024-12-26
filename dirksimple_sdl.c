@@ -73,7 +73,7 @@ void DirkSimple_writelog(const char *str)
     SDL_Log("%s", str);
 }
 
-static long DirkSimple_rwops_read(DirkSimple_Io *io, void *buf, long buflen)
+static long DirkSimple_sdliostream_read(DirkSimple_Io *io, void *buf, long buflen)
 {
     SDL_IOStream *stream = (SDL_IOStream *) io->userdata;
     const size_t br = SDL_ReadIO(stream, buf, buflen);
@@ -83,18 +83,18 @@ static long DirkSimple_rwops_read(DirkSimple_Io *io, void *buf, long buflen)
     return (long) br;
 }
 
-static long DirkSimple_rwops_streamlen(DirkSimple_Io *io)
+static long DirkSimple_sdliostream_streamlen(DirkSimple_Io *io)
 {
     return (long) SDL_GetIOSize((SDL_IOStream *) io->userdata);
 }
 
-static int DirkSimple_rwops_seek(DirkSimple_Io *io, long absolute_offset)
+static int DirkSimple_sdliostream_seek(DirkSimple_Io *io, long absolute_offset)
 {
     return SDL_SeekIO((SDL_IOStream *) io->userdata, absolute_offset,
                       SDL_IO_SEEK_SET) != -1;
 }
 
-static void DirkSimple_rwops_close(DirkSimple_Io *io)
+static void DirkSimple_sdliostream_close(DirkSimple_Io *io)
 {
     SDL_CloseIO((SDL_IOStream *) io->userdata);
     DirkSimple_free(io);
@@ -103,14 +103,14 @@ static void DirkSimple_rwops_close(DirkSimple_Io *io)
 DirkSimple_Io *DirkSimple_openfile_read(const char *path)
 {
     DirkSimple_Io *io = NULL;
-    SDL_IOStream *rwops = SDL_IOFromFile(path, "rb");
-    if (rwops) {
+    SDL_IOStream *sdliostream = SDL_IOFromFile(path, "rb");
+    if (sdliostream) {
         io = DirkSimple_xmalloc(sizeof (DirkSimple_Io));
-        io->read = DirkSimple_rwops_read;
-        io->streamlen = DirkSimple_rwops_streamlen;
-        io->seek = DirkSimple_rwops_seek;
-        io->close = DirkSimple_rwops_close;
-        io->userdata = rwops;
+        io->read = DirkSimple_sdliostream_read;
+        io->streamlen = DirkSimple_sdliostream_streamlen;
+        io->seek = DirkSimple_sdliostream_seek;
+        io->close = DirkSimple_sdliostream_close;
+        io->userdata = sdliostream;
     }
     return io;
 }
