@@ -853,6 +853,22 @@ static int luahook_DirkSimple_show_single_frame(lua_State *L)
     return 0;
 }
 
+static void DirkSimple_continue_clip(void)
+{
+    if (GDecoder && GShowingSingleFrame) {
+        DirkSimple_log("CONTINUE CLIP: GTicks %u", (unsigned int) GTicks);
+        GClipStartTicks = 0;
+        GHalted = 0;
+        GShowingSingleFrame = 0;
+    }
+}
+
+static int luahook_DirkSimple_continue_clip(lua_State *L)
+{
+    DirkSimple_continue_clip();
+    return 0;
+}
+
 
 static void DirkSimple_start_clip(uint32_t startms)
 {
@@ -1190,6 +1206,7 @@ static void setup_lua(void)
     lua_newtable(GLua);
         set_cfunc(GLua, luahook_DirkSimple_show_single_frame, "show_single_frame");
         set_cfunc(GLua, luahook_DirkSimple_start_clip, "start_clip");
+        set_cfunc(GLua, luahook_DirkSimple_continue_clip, "continue_clip");
         set_cfunc(GLua, luahook_DirkSimple_halt_video, "halt_video");
         set_cfunc(GLua, luahook_DirkSimple_log, "log");
         set_cfunc(GLua, luahook_panic, "panic");
