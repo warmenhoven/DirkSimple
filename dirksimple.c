@@ -1718,7 +1718,10 @@ static void send_rendering_primitives(void)
                                       cmd->data.sprite.r, cmd->data.sprite.g, cmd->data.sprite.b);
                 break;
             case RENDPRIM_SOUND:
-                DirkSimple_playwave(get_cached_wave(cmd->data.sound.name));
+                if (cmd->data.sound.name[0]) {
+                    DirkSimple_playwave(get_cached_wave(cmd->data.sound.name));
+                    GRenderCommands[i].data.sound.name[0] = '\0';   // !!! FIXME: hack, make sure these don't play a second time if we re-render a frame. Take audio out of the rendering array?
+                }
                 break;
             default:
                 DirkSimple_panic("Unexpected rendering primitive");
