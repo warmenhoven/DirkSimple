@@ -45,6 +45,9 @@ static SDL_GameController *GGameController = NULL;
 static uint8_t GSaveSlot = 0;
 static SaveSlot GSaveData[8];
 static uint64_t GKeyInputBits = 0;
+static uint64_t GMouseInputBits = 0;
+static Sint32 GMousePositionX = -1;
+static Sint32 GMousePositionY = -1;
 static SDL_bool GWantFullscreen = SDL_FALSE;
 static PlayingWave *GPlayingWaves = NULL;
 static SDL_AudioStream *GDiscAudioStream = NULL;
@@ -398,10 +401,36 @@ void DirkSimple_destroywave(DirkSimple_Wave *wave)
 static SDL_bool mainloop_iteration(void)
 {
     uint64_t controllerinputbits = 0;
+    uint64_t dirkbit = 0;
+    float pointerx, pointery;
     SDL_Event e;
 
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
+            case SDL_MOUSEMOTION:
+                GMousePositionX = e.motion.x;
+                GMousePositionY = e.motion.y;
+                break;
+
+            case SDL_MOUSEBUTTONUP:
+            case SDL_MOUSEBUTTONDOWN:
+                GMousePositionX = e.button.x;
+                GMousePositionY = e.button.y;
+                switch (e.button.button) {
+                    case SDL_BUTTON_LEFT: dirkbit = DIRKSIMPLE_INPUT_ACTION1; break;
+                    case SDL_BUTTON_RIGHT: dirkbit = DIRKSIMPLE_INPUT_ACTION2; break;
+                    case SDL_BUTTON_MIDDLE: dirkbit = DIRKSIMPLE_INPUT_START; break;  // kinda a hack, so you can fully play lightgun games from the mouse alone, if all you were missing was a Player 1 Start button.
+                    default: break;
+                }
+
+                if (e.button.state == SDL_PRESSED) {
+                    GMouseInputBits |= dirkbit;
+                } else {
+                    GMouseInputBits &= ~dirkbit;
+                }
+
+                break;
+
             case SDL_KEYDOWN:
                 switch (e.key.keysym.sym) {
                     case SDLK_UP: GKeyInputBits |= DIRKSIMPLE_INPUT_UP; break;
@@ -529,7 +558,9 @@ static SDL_bool mainloop_iteration(void)
         #undef CHECK_JOYPAD_INPUT
     }
 
-    DirkSimple_tick(SDL_GetTicks(), GKeyInputBits | controllerinputbits);
+    pointerx = GLaserDiscTextureWidth ? ((float) GMousePositionX / ((float) GLaserDiscTextureWidth)) : -1.0f;
+    pointery = GLaserDiscTextureHeight ? ((float) GMousePositionY / ((float) GLaserDiscTextureHeight)) : -1.0f;
+    DirkSimple_tick(SDL_GetTicks(), GKeyInputBits | GMouseInputBits | controllerinputbits, pointerx, pointery);
 
     return SDL_TRUE;
 }

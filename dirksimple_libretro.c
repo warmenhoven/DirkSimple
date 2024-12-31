@@ -723,7 +723,7 @@ void retro_run(void)
             check_variables();
         }
 
-        DirkSimple_tick(runtime_usecs / 1000, get_current_inputbits());
+        DirkSimple_tick(runtime_usecs / 1000, get_current_inputbits(), -1.0f, -1.0f);  // !!! FIXME: pointer input
         feed_audio();
     }
     video_cb(framebuffer, framebuffer_width, framebuffer_height, framebuffer_width * ((pixfmt == DIRKSIMPLE_PIXFMT_RGB565) ? sizeof (uint16_t) : sizeof (uint32_t)));
@@ -810,7 +810,7 @@ bool retro_load_game(const struct retro_game_info *info)
         }
 
         while (!framebuffer_width || !audio_channels) {
-            DirkSimple_tick(0, 0);  // spin here until we either panic or have the av dimensions.
+            DirkSimple_tick(0, 0, -1.0f, -1.0f);  // spin here until we either panic or have the av dimensions.
         }
 
         retval = true;

@@ -1215,6 +1215,20 @@ static void set_string(lua_State *L, const char *str, const char *sym)
     lua_setfield(L, -2, sym);
 }
 
+// Sets t[sym]=f, where t is on the top of the Lua stack.
+static void set_boolean(lua_State *L, int x, const char *sym)
+{
+    lua_pushboolean(L, x);
+    lua_setfield(L, -2, sym);
+}
+
+// Sets t[sym]=f, where t is on the top of the Lua stack.
+static void set_float(lua_State *L, float x, const char *sym)
+{
+    lua_pushnumber(L, (lua_Number) x);
+    lua_setfield(L, -2, sym);
+}
+
 static void setup_lua(void)
 {
     GLua = lua_newstate(DirkSimple_lua_allocator, NULL);  // calls DirkSimple_panic() on failure.
@@ -1596,13 +1610,6 @@ void DirkSimple_shutdown(void)
 }
 
 
-// Sets t[sym]=f, where t is on the top of the Lua stack.
-static void set_boolean(lua_State *L, int x, const char *sym)
-{
-    lua_pushboolean(L, x);
-    lua_setfield(L, -2, sym);
-}
-
 typedef int (*inputbit_testfn)(const uint64_t curbits, const uint64_t prevbits, const uint64_t flag);
 
 static int inputbit_is_pressed(const uint64_t curbits, const uint64_t prevbits, const uint64_t flag)
@@ -1639,10 +1646,12 @@ static void set_input_subtable(lua_State *L, const char *tablename, inputbit_tes
     lua_setfield(L, -2, tablename);
 }
 
-static void push_inputs_table(lua_State *L, const uint64_t curbits)
+static void push_inputs_table(lua_State *L, const uint64_t curbits, float pointerx, float pointery)
 {
     const uint64_t prevbits = GPreviousInputBits;
     lua_newtable(L);  // the inputs table
+    set_float(L, pointerx, "pointerx");
+    set_float(L, pointery, "pointery");
     set_input_subtable(L, "pressed", inputbit_is_pressed, curbits, prevbits);
     set_input_subtable(L, "held", inputbit_is_held, curbits, prevbits);
     set_input_subtable(L, "released", inputbit_is_released, curbits, prevbits);
@@ -1650,7 +1659,7 @@ static void push_inputs_table(lua_State *L, const uint64_t curbits)
     // inputs table is ready, on top of Lua stack.
 }
 
-static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks, uint64_t inputbits)
+static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks, uint64_t inputbits, float pointerx, float pointery)
 {
     lua_getglobal(L, DIRKSIMPLE_LUA_NAMESPACE);
     if (!lua_istable(L, -1)) {  // namespace is sane?
@@ -1662,7 +1671,7 @@ static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks,
     }
     lua_pushnumber(L, (lua_Number) ticks);
     lua_pushnumber(L, (lua_Number) clipstartticks);
-    push_inputs_table(L, inputbits);
+    push_inputs_table(L, inputbits, pointerx, pointery);
     lua_call(L, 3, 0);  // this will pop the function and args
     lua_pop(L, 1);  // pop the namespace
 
@@ -1718,7 +1727,7 @@ static void send_rendering_primitives(void)
     GNumRenderCommands = 0;
 }
 
-static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits)
+static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, float pointerx, float pointery)
 {
     lua_State *L = GLua;
     const THEORAPLAY_AudioPacket *audio = NULL;
@@ -1832,9 +1841,9 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits)
     const unsigned int expected_seek_generation = GSeekGeneration;
     if (GNeedInitialLuaTick) {
         GNeedInitialLuaTick = 0;
-        call_lua_tick(L, 0, 0, 0);
+        call_lua_tick(L, 0, 0, 0, -1.0f, -1.0f);
     } else if (GClipStartTicks) {
-        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits);
+        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery);
     }
 
     if (GHalted) {
@@ -1881,7 +1890,7 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits)
             GPendingVideoFrame = NULL;
         }
         // we didn't call the tick earlier in this function because we were still waiting; do it now that the seek is resolved.
-        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits);
+        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery);
     }
 
     if (!GShowingSingleFrame) {
@@ -1935,9 +1944,9 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits)
     }
 }
 
-void DirkSimple_tick(uint64_t monotonic_ms, uint64_t inputbits)
+void DirkSimple_tick(uint64_t monotonic_ms, uint64_t inputbits, float pointerx, float pointery)
 {
-    DirkSimple_tick_impl(monotonic_ms, inputbits);
+    DirkSimple_tick_impl(monotonic_ms, inputbits, pointerx, pointery);
     send_rendering_primitives();
     GPreviousInputBits = inputbits;
 }

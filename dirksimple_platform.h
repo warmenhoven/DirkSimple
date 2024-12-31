@@ -69,7 +69,8 @@ extern void DirkSimple_startup(const char *basedir, const char *gamepath, const 
 // You call this frequently (once per frame or more).
 //  `monotonic_ms` is current time in milliseconds. It must increase reliably, and doesn't matter what value it starts at.
 //  `inputbits` is a bitmask of DIRKSIMPLE_INPUT_* flags.
-extern void DirkSimple_tick(uint64_t monotonic_ms, uint64_t inputbits);
+//  `pointerx` and `pointery` are mouse/touch/pen/lightgun/whatever positions between 0.0f and 1.0f (top left to bottom right of display). Send -1,-1 if unsupported.
+extern void DirkSimple_tick(uint64_t monotonic_ms, uint64_t inputbits, float pointerx, float pointery);
 
 // You call this once when done with a game to clean up.
 extern void DirkSimple_shutdown(void);
