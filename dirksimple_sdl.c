@@ -349,7 +349,7 @@ void DirkSimple_drawsprite(DirkSimple_Sprite *sprite, int sx, int sy, int sw, in
     }
 
     if (texture == NULL) {
-        texture = SDL_CreateTexture(GRenderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC, sprite->width, sprite->height);
+        texture = SDL_CreateTexture(GRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, sprite->width, sprite->height);
         if (!texture) {
             char what[128];
             SDL_snprintf(what, sizeof (what), "Failed to create texture for sprite '%s'", sprite->name);
