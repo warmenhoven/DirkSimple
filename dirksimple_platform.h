@@ -104,7 +104,7 @@ extern void DirkSimple_setcvar(const char *name, const char *newvalue);
 
 // Your platform layer implements these, which dirksimple.c calls into...
 
-/* simple allocators, in case you don't want to use malloc */
+// simple allocators, in case you don't want to use malloc
 extern void *DirkSimple_malloc(size_t len);
 extern void *DirkSimple_calloc(size_t nmemb, size_t len);
 extern void *DirkSimple_realloc(void *ptr, size_t len);
