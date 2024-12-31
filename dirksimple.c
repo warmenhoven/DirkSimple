@@ -1669,6 +1669,9 @@ static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks,
     if (!lua_isfunction(L, -1)) {
         DirkSimple_panic("DirkSimple.tick is not a function!");
     }
+
+    GNumRenderCommands = 0;  // clear rendering commands from previous frame, Lua code will replace them.
+
     lua_pushnumber(L, (lua_Number) ticks);
     lua_pushnumber(L, (lua_Number) clipstartticks);
     push_inputs_table(L, inputbits, pointerx, pointery);
@@ -1723,8 +1726,6 @@ static void send_rendering_primitives(void)
         }
     }
     DirkSimple_endframe();
-
-    GNumRenderCommands = 0;
 }
 
 static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, float pointerx, float pointery)
