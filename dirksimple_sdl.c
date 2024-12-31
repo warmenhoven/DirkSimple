@@ -287,6 +287,8 @@ void DirkSimple_cleardiscaudio(void)
 
 void mainloop_shutdown(void)
 {
+    DirkSimple_shutdown();
+
     SDL_DestroyTexture(GLaserDiscTexture);
     SDL_DestroyRenderer(GRenderer);
     SDL_DestroyWindow(GWindow);
@@ -306,8 +308,6 @@ void mainloop_shutdown(void)
         SDL_GameControllerClose(GGameController);
         GGameController = NULL;
     }
-
-    DirkSimple_shutdown();
 
     SDL_Quit();
 }
