@@ -1659,8 +1659,13 @@ static void push_inputs_table(lua_State *L, const uint64_t curbits, float pointe
     // inputs table is ready, on top of Lua stack.
 }
 
-static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks, uint64_t inputbits, float pointerx, float pointery)
+static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks, uint64_t inputbits, float pointerx, float pointery, int *already_called)
 {
+    if (*already_called) {
+        return;
+    }
+    *already_called = 1;
+
     lua_getglobal(L, DIRKSIMPLE_LUA_NAMESPACE);
     if (!lua_istable(L, -1)) {  // namespace is sane?
         DirkSimple_panic("DirkSimple Lua namespace is not a table!");
@@ -1735,6 +1740,7 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, floa
 {
     lua_State *L = GLua;
     const THEORAPLAY_AudioPacket *audio = NULL;
+    int called_lua_tick = 0;
 
     if (!L) {
         DirkSimple_panic("Lua VM is missing?!");
@@ -1845,9 +1851,9 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, floa
     const unsigned int expected_seek_generation = GSeekGeneration;
     if (GNeedInitialLuaTick) {
         GNeedInitialLuaTick = 0;
-        call_lua_tick(L, 0, 0, 0, -1.0f, -1.0f);
+        call_lua_tick(L, 0, 0, 0, -1.0f, -1.0f, &called_lua_tick);
     } else if (GClipStartTicks) {
-        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery);
+        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery, &called_lua_tick);
     }
 
     if (GHalted) {
@@ -1894,7 +1900,7 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, floa
             GPendingVideoFrame = NULL;
         }
         // we didn't call the tick earlier in this function because we were still waiting; do it now that the seek is resolved.
-        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery);
+        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery, &called_lua_tick);
     }
 
     if (!GShowingSingleFrame) {
