@@ -149,8 +149,9 @@ static void SDLCALL audio_callback(void *userdata, Uint8 *stream, int len)
                 GPlayingWaves = next;
             }
             DirkSimple_free(pw);
+        } else {
+            prev = pw;
         }
-        prev = pw;
         pw = next;
     }
 }
