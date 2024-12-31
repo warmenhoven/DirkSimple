@@ -47,6 +47,7 @@ typedef enum RenderPrimitive
 {
     RENDPRIM_CLEAR,
     RENDPRIM_SPRITE,
+    RENDPRIM_RECT,
     RENDPRIM_SOUND,
 } RenderPrimitive;
 
@@ -59,6 +60,11 @@ typedef struct RenderCommand
         {
             uint8_t r, g, b;
         } clear;
+        struct
+        {
+            int32_t x, y, w, h;
+            uint8_t r, g, b;
+        } rect;
         struct
         {
             char name[32];
@@ -999,6 +1005,19 @@ static int luahook_DirkSimple_clear_screen(lua_State *L)
     return 0;
 }
 
+static int luahook_DirkSimple_draw_rect(lua_State *L)
+{
+    RenderCommand *cmd = new_render_command(RENDPRIM_RECT);
+    cmd->data.rect.x = (int32_t) lua_tonumber(L, 1);
+    cmd->data.rect.y = (int32_t) lua_tonumber(L, 2);
+    cmd->data.rect.w = (int32_t) lua_tonumber(L, 3);
+    cmd->data.rect.h = (int32_t) lua_tonumber(L, 4);
+    cmd->data.rect.r = (uint8_t) lua_tonumber(L, 5);
+    cmd->data.rect.g = (uint8_t) lua_tonumber(L, 6);
+    cmd->data.rect.b = (uint8_t) lua_tonumber(L, 7);
+    return 0;
+}
+
 static int luahook_DirkSimple_draw_sprite(lua_State *L)
 {
     RenderCommand *cmd = new_render_command(RENDPRIM_SPRITE);
@@ -1216,6 +1235,7 @@ static void setup_lua(void)
         set_cfunc(GLua, luahook_DirkSimple_to_int, "to_int");
         set_cfunc(GLua, luahook_DirkSimple_to_bool, "to_bool");
         set_cfunc(GLua, luahook_DirkSimple_clear_screen, "clear_screen");
+        set_cfunc(GLua, luahook_DirkSimple_draw_rect, "draw_rect");
         set_cfunc(GLua, luahook_DirkSimple_draw_sprite, "draw_sprite");
         set_cfunc(GLua, luahook_DirkSimple_play_sound, "play_sound");
         set_string(GLua, "", "gametitle");
@@ -1674,6 +1694,10 @@ static void send_rendering_primitives(void)
         switch (cmd->prim) {
             case RENDPRIM_CLEAR:
                 DirkSimple_clearscreen(cmd->data.clear.r, cmd->data.clear.g, cmd->data.clear.b);
+                break;
+            case RENDPRIM_RECT:
+                DirkSimple_drawrect(cmd->data.rect.x, cmd->data.rect.y, cmd->data.rect.w, cmd->data.rect.h,
+                                    cmd->data.rect.r, cmd->data.rect.g, cmd->data.rect.b);
                 break;
             case RENDPRIM_SPRITE:
                 DirkSimple_drawsprite(get_cached_sprite(cmd->data.sprite.name),

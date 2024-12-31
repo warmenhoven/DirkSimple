@@ -325,6 +325,15 @@ void DirkSimple_clearscreen(uint8_t r, uint8_t g, uint8_t b)
     }
 }
 
+void DirkSimple_drawrect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (GRenderer) {
+        const SDL_Rect rect = { x, y, w, h };
+        SDL_SetRenderDrawColor(GRenderer, r, g, b, 255);
+        SDL_RenderDrawRect(GRenderer, &rect);
+    }
+}
+
 void DirkSimple_drawsprite(DirkSimple_Sprite *sprite, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, uint8_t rmod, uint8_t gmod, uint8_t bmod)
 {
     SDL_Texture *texture = (SDL_Texture *) sprite->platform_handle;

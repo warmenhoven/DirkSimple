@@ -328,6 +328,11 @@ void DirkSimple_clearscreen(uint8_t r, uint8_t g, uint8_t b)
     }
 }
 
+void DirkSimple_drawrect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b)
+{
+    // !!! FIXME: write me.
+}
+
 void DirkSimple_drawsprite(DirkSimple_Sprite *sprite, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, uint8_t rmod, uint8_t gmod, uint8_t bmod)
 {
     // !!! FIXME: this is probably the worst possible scaling code, but it's dirt simple. We'll still want Nearest Neighbor, but...maybe a faster version of it.

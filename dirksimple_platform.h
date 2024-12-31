@@ -163,7 +163,11 @@ extern void DirkSimple_beginframe(void);
 // This signifies that rendering is complete and the frame should be presented.
 extern void DirkSimple_endframe(void);
 
+// Clear the screen to a specific color, including wiping out on-screen laserdisc content.
 extern void DirkSimple_clearscreen(uint8_t r, uint8_t g, uint8_t b);
+
+// Draw a colored rectangle with a one-pixel-wide frame, unfilled.
+extern void DirkSimple_drawrect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
 
 typedef struct DirkSimple_Sprite DirkSimple_Sprite;
 
