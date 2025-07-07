@@ -535,6 +535,7 @@ cleanup:  // we will do actual cleanup when closing the decoder.
 // This massive function is where all the effort happens.
 static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
 {
+int wasted_frames = 0;
     int had_new_video_frames = 0;
 
     if (!ctx->prepped)
@@ -552,10 +553,15 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
 
         if (ctx->current_seek_generation != ctx->seek_generation)  // seek requested
         {
+unsigned int total_seek_attempts = 0;
+            const unsigned long max_keyframe_distance = 1 << ctx->tinfo.keyframe_granule_shift;  // maximum frames between keyframes.
+            //const unsigned long max_keyframe_ms = (unsigned int) (max_keyframe_distance * (1000.0 / ctx->fps));
             unsigned long targetms;
+            unsigned long targetframe;
             long seekpos;
             long lo, hi;
             int found = 0;
+            int seek_only_backwards = 0;
 
             if (!ctx->io->seek)
                 goto cleanup;  // seeking unsupported.
@@ -576,6 +582,8 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
             targetms = ctx->new_seek_position_ms;
             Mutex_Unlock(ctx->lock);
 
+            targetframe = targetms * (ctx->fps / 1000.0);
+
             lo = 0;
             hi = ctx->streamlen;
 
@@ -586,8 +594,7 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
 
             while ((!ctx->halt) && (ctx->current_seek_generation == ctx->seek_generation))
             {
-                //const int max_keyframe_distance = 1 << ctx->tinfo.keyframe_granule_shift;
-
+total_seek_attempts++;
                 // Do a binary search through the stream to find our starting point.
                 // This idea came from libtheoraplayer (no relation to theoraplay).
                 if (ctx->io->seek(ctx->io, seekpos) == -1)
@@ -611,31 +618,53 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
                     if (ctx->granulepos >= 0)
                     {
                         const int serialno = ogg_page_serialno(&ctx->page);
-                        unsigned long ms;
-
                         if (ctx->tpackets)  // always tee off video frames if possible.
                         {
+                            unsigned long frame, distance;
+
                             if (serialno != ctx->tserialno)
                                 continue;
-                            ms = (unsigned long) (th_granule_time(ctx->tdec, ctx->granulepos) * 1000.0);
+
+                            frame = (unsigned long) th_granule_frame(ctx->tdec, ctx->granulepos);
+                            distance = targetframe - frame;
+//printf("frame=%lu targetframe=%lu distance=%lu maxdistance=%lu backwardsonly=%s\n", frame, targetframe, distance, max_keyframe_distance, seek_only_backwards ? "true" : "false");
+                            if ((frame < targetframe) && ((distance >= max_keyframe_distance) && (distance <= (max_keyframe_distance * 2))))
+                                found = 1;  // found something close enough to the target! We'll decode forward through the next keyframe to the actual target.
+                            else if (seek_only_backwards && ((frame < targetframe) && (distance >= max_keyframe_distance)))
+                                found = 1;  // we're at least a keyframe back, if we overshot by two, oh well, good enough.
+                            else if (seek_only_backwards || ((frame > targetframe) && ((frame - targetframe) < max_keyframe_distance)) || ((frame < targetframe) && ((distance < max_keyframe_distance))))
+                            {
+                                // we're less than a keyframe from the target in either direction, just seek backwards until we
+                                //  have enough distance to hit a keyframe, since binary searching by byte position will likely fail now.
+                                seek_only_backwards = 1;
+                            }
+                            else  // adjust binary search position and try again.
+                            {
+                                const long newpos = (lo / 2) + (hi / 2);
+                                if (targetframe > frame)
+                                    lo = newpos;
+                                else
+                                    hi = newpos;
+                            } // else
                         } // else
                         else
                         {
+                            unsigned long ms;
                             if (serialno != ctx->vserialno)
                                 continue;
                             ms = (unsigned long) (vorbis_granule_time(&ctx->vdsp, ctx->granulepos) * 1000.0);
+                            if ((ms < targetms) && ((targetms - ms) >= 500) && ((targetms - ms) <= 1000))   // !!! FIXME: tweak this number?
+                                found = 1;  // found something close enough to the target!
+                            else  // adjust binary search position and try again.
+                            {
+                                const long newpos = (lo / 2) + (hi / 2);
+                                if (targetms > ms)
+                                    lo = newpos;
+                                else
+                                    hi = newpos;
+                            } // else
                         } // else
 
-                        if ((ms < targetms) && ((targetms - ms) >= 500) && ((targetms - ms) <= 1000))   // !!! FIXME: tweak this number?
-                            found = 1;  // found something close enough to the target!
-                        else  // adjust binary search position and try again.
-                        {
-                            const long newpos = (lo / 2) + (hi / 2);
-                            if (targetms > ms)
-                                lo = newpos;
-                            else
-                                hi = newpos;
-                        } // else
                         break;
                     } // if
                 } // while
@@ -643,14 +672,27 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
                 if (found)
                     break;
 
-                const long newseekpos = (lo / 2) + (hi / 2);
-                if (seekpos == newseekpos)
-                    break;  // we did the best we could, just go from here.
-                seekpos = newseekpos;
+                if (seek_only_backwards) {
+                    // the theoretical maximum is 65052 bytes per Ogg page, which is probably larger than most, but skipping back multiple
+                    //  pages is likely necessary to move back full frames in most videos anyhow, not to mention the interleaved audio packets.
+                    const long pageseeksize = 512 * 1024;
+                    if (seekpos == 0)
+                        break;  // we did the best we could, just go from here.
+                    else if (seekpos < pageseeksize)
+                        seekpos = 0;  // last try.
+                    else
+                        seekpos -= pageseeksize;
+                } else {
+                    const long newseekpos = (lo / 2) + (hi / 2);
+                    if (seekpos == newseekpos)
+                        break;  // we did the best we could, just go from here.
+                    seekpos = newseekpos;
+                }
             } // while
 
             // at this point, we have seek'd to something reasonably close to our target. Now decode until we're as close as possible to it.
             vorbis_synthesis_restart(&ctx->vdsp);
+printf("Total seek attempts: %d\n", total_seek_attempts);
             ctx->resolving_audio_seek = ctx->vpackets;
             ctx->resolving_video_seek = ctx->tpackets;
             ctx->seek_target = targetms;
@@ -766,7 +808,14 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
                         ctx->need_keyframe = 0;
 
                     if (ctx->resolving_video_seek && !ctx->need_keyframe && ((playms >= ctx->seek_target) || ((ctx->seek_target - playms) <= (unsigned long) (1000.0 / ctx->fps))))
+{
+printf("Resolving video seek at %u playms, frame %llu\n", playms, (unsigned long long) th_granule_frame(ctx->tdec, ctx->granulepos));
+printf("Wasted %d frames\n", wasted_frames);
+wasted_frames = 0;
                         ctx->resolving_video_seek = 0;
+}
+
+if (ctx->resolving_video_seek) { wasted_frames++; }
 
                     if (!ctx->resolving_video_seek)
                     {
