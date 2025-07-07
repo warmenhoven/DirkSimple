@@ -35,13 +35,16 @@ DirkSimple.cvars = {
 -- SOME INITIAL SETUP STUFF
 local scenes = nil  -- gets set up later in the file.
 local test_scene_name = nil  -- set to name of scene to test. nil otherwise!
---test_scene_name = "lives_left"
+--test_scene_name = "saloon"
 
 -- GAME STATE
 local current_ticks = 0
 local current_inputs = nil
 local accepted_input = nil
 local scene_manager = { initialized=false }
+local previous_sequence_ticks = 0
+local input_tolerance = 0;
+local max_input_tolerance = 100 -- milliseconds    !!! FIXME: should be a cvar?
 
 -- will be set when ticking.
 local xscale = nil
@@ -51,6 +54,9 @@ local yscale = nil
 local bottle_points = 50
 local badguy_points = 100
 local headshot_bonus_points = 25
+local goodguy_points = -1
+local spittoon_points = -2
+
 
 local function time_laserdisc_noseek()
     return -1
@@ -292,21 +298,34 @@ local function draw_number(num, maxdigits, dx, dy, glyphscale)
 end
 
 local function draw_hitboxes()
+local drew = false
     local actions = scene_manager.current_sequence.actions
     if actions ~= nil then
         local rect_xscale = (1440.0 / 360.0) * xscale
         local rect_yscale = (1080.0 / 240.0) * yscale
         for i,v in ipairs(actions) do
             -- ignore if not in the time window for this input, or not a shooting action.
-            if (v.input == "action") and ((v.from == nil) or ((scene_manager.current_sequence_ticks >= v.from) and (scene_manager.current_sequence_ticks <= v.to))) then
-                -- !!! FIXME: draw enemies in red, civilians in green, and skulls/spitoons in yellow
-                local area = v.area
-                if area ~= nil then
+            local area = v.area
+            if area ~= nil and (v.input == "action") then
+                if ((v.from == nil) or ((scene_manager.current_sequence_ticks >= (v.from - input_tolerance)) and (scene_manager.current_sequence_ticks <= (v.to + laserdisc_frame_to_ms(1))))) then
                     local x = area[1]
                     local y = area[2]
                     local w = area[3] - x
                     local h = area[4] - y
-                    DirkSimple.draw_rect(x * rect_xscale, y * rect_yscale, w * rect_xscale, h * rect_yscale, 255, 0, 0)
+                    local r = 0
+                    local g = 0
+                    local b = 0
+                    if v.points == badguy_points then
+                        r = 255
+                        if v.best then
+                            b = 255
+                        end
+                    elseif v.points == goodguy_points then
+                        g = 255
+                    else
+                        b = 255
+                    end
+                    DirkSimple.draw_rect(x * rect_xscale, y * rect_yscale, w * rect_xscale, h * rect_yscale, r, g, b)
                 end
             end
         end
@@ -446,6 +465,12 @@ local function setup_scene_manager()
     scene_manager.reload_allowed = true
     scene_manager.previous_scene_name = nil
     scene_manager.died_in_scene_name = nil
+    scene_manager.completed_saloon = false
+    scene_manager.completed_corral = false
+    scene_manager.completed_jail = false
+    scene_manager.completed_bank = false
+    scene_manager.saloon_ambush_passed = false
+    scene_manager.barkeeper_killed = false
 end
 
 local function start_sequence(sequencename)
@@ -552,6 +577,8 @@ local function check_actions(inputs)
             if scene_manager.loaded_bullets == 0 then
                 gunsound = "empty"
             else
+                -- flash the screen white for one frame when firing to give some weight to it. I learned this trick from The Fablemans, lol.
+                DirkSimple.clear_screen(255, 255, 255)
                 gunsound = "shot"
                 if not infinite_bullets then
                     scene_manager.loaded_bullets = scene_manager.loaded_bullets - 1
@@ -595,7 +622,7 @@ local function check_actions(inputs)
     if actions ~= nil then
         for i,v in ipairs(actions) do
             -- ignore if not in the time window for this input.
-            if (v.from == nil) or ((scene_manager.current_sequence_ticks >= v.from) and (scene_manager.current_sequence_ticks <= v.to)) then
+            if (v.from == nil) or ((scene_manager.current_sequence_ticks >= (v.from - input_tolerance)) and (scene_manager.current_sequence_ticks <= v.to)) then
                 local input = v.input
                 local area = v.area
                 if god_mode and v.best then
@@ -632,7 +659,7 @@ local function check_timeout()
     local done_with_sequence = false
     if scene_manager.current_sequence_ticks >= scene_manager.current_sequence.timeout.when then  -- whole sequence has run to completion.
         done_with_sequence = true
-    elseif (accepted_input ~= nil) then --and accepted_input.interrupt ~= nil then  -- If interrupting, forego the timeout.
+    elseif (accepted_input ~= nil) then -- Mad Dog McCree treats all accepted inputs as done_with_sequence. Dragon's Lair had this, though: `and accepted_input.interrupt ~= nil then  -- If interrupting, forego the timeout.`
         done_with_sequence = true
     elseif (accepted_input ~= nil) and (type(accepted_input.nextsequence) == "string") and (scene_manager.current_scene[accepted_input.nextsequence].start_time ~= time_laserdisc_noseek()) then  -- If action leads to a laserdisc seek, forego the timeout.
         done_with_sequence = true
@@ -651,7 +678,7 @@ local function check_timeout()
         outcome = scene_manager.current_sequence.timeout
     end
 
-    if outcome.points ~= nil then
+    if (outcome.points ~= nil) and (outcome.points >= 0) then
         scene_manager.current_score = scene_manager.current_score + outcome.points
     end
 
@@ -697,6 +724,12 @@ DirkSimple.serialize = function()
     state[#state + 1] = scene_manager.reload_allowed
     state[#state + 1] = scene_manager.previous_scene_name
     state[#state + 1] = scene_manager.died_in_scene_name
+    state[#state + 1] = scene_manager.completed_saloon
+    state[#state + 1] = scene_manager.completed_corral
+    state[#state + 1] = scene_manager.completed_jail
+    state[#state + 1] = scene_manager.completed_bank
+    state[#state + 1] = scene_manager.saloon_ambush_passed
+    state[#state + 1] = scene_manager.barkeeper_killed
 
     return state
 end
@@ -722,8 +755,17 @@ DirkSimple.unserialize = function(state)
     scene_manager.reload_allowed = state[idx] ; idx = idx + 1
     scene_manager.previous_scene_name = state[idx] ; idx = idx + 1
     scene_manager.died_in_scene_name = state[idx] ; idx = idx + 1
+    scene_manager.completed_saloon = state[idx] ; idx = idx + 1
+    scene_manager.completed_corral = state[idx] ; idx = idx + 1
+    scene_manager.completed_jail = state[idx] ; idx = idx + 1
+    scene_manager.completed_bank = state[idx] ; idx = idx + 1
+    scene_manager.saloon_ambush_passed = state[idx] ; idx = idx + 1
+    scene_manager.barkeeper_killed = state[idx] ; idx = idx + 1
+
     scene_manager.unserialize_offset = scene_manager.current_sequence_ticks + scene_manager.current_sequence_tick_offset
     scene_manager.current_sequence_tick_offset = 0  -- unserialize_offset will handle everything up until now, until the next sequence starts.
+
+    previous_sequence_ticks = 0  -- reset this.
 
     if scene_manager.current_scene_name ~= nil then
         scene_manager.current_scene = scenes[scene_manager.current_scene_name]
@@ -764,6 +806,15 @@ DirkSimple.tick = function(ticks, sequenceticks, inputs)
     end
 
     scene_manager.current_sequence_ticks = (sequenceticks + scene_manager.unserialize_offset) - scene_manager.current_sequence_tick_offset
+    if (previous_sequence_ticks == 0) or (previous_sequence_ticks > scene_manager.current_sequence_ticks) then
+        previous_sequence_ticks = scene_manager.current_sequence_ticks
+    end
+
+    input_tolerance = scene_manager.current_sequence_ticks - previous_sequence_ticks
+    if input_tolerance > max_input_tolerance then
+        input_tolerance = max_input_tolerance
+    end
+
     --DirkSimple.log("LUA TICK(ticks=" .. tostring(current_ticks) .. ", sequenceticks=" .. tostring(scene_manager.current_sequence_ticks) .. ", tick_offset=" .. tostring(scene_manager.current_sequence_tick_offset) .. ", unserialize_offset=" .. tostring(scene_manager.unserialize_offset) .. ")")
 
     if scene_manager.current_sequence == nil then
@@ -790,11 +841,14 @@ DirkSimple.tick = function(ticks, sequenceticks, inputs)
 
     check_actions(inputs)   -- check inputs before timeout, in case an input came through at the last possible moment, even if we're over time.
     check_timeout()
+
+    previous_sequence_ticks = scene_manager.current_sequence_ticks
 end
 
 -- this is called when starting the tutorial, to decide what bottles will be popping up.
 local bottle_sequences = { { 1, 3, 5, 6 }, { 2, 4, 3, 6 }, { 3, 4, 1, 5 }, { 4, 6, 2, 3 }, { 5, 2, 3, 1 }, { 6, 5, 2, 4 }, { 3, 1, 2, 4 }, { 1, 4, 3, 6 } }
 local function bottle_plan()
+    --uncomment next line for debugging all bottles.
     --bottle_sequences = { { 1, 2, 3, 4, 5, 6 } }
     local choice = DirkSimple.to_int(current_ticks % #bottle_sequences) + 1
     local seq = bottle_sequences[choice]
@@ -876,14 +930,55 @@ local function handle_death()
     end
 end
 
-local function overlay_lives_left()
-    local lives_left = scene_manager.lives_left
-    if (lives_left < 0) then lives_left = 0 elseif (lives_left > 9) then lives_left = 9 end
-    local sw = 13 * 4  -- quadrupled to look better
-    local sh = 29 * 4  -- quadrupled to look better
-    local dx = (DirkSimple.video_width - sw) / 2   -- center it
-    local dy = DirkSimple.video_height * 0.27
-    draw_number(lives_left, 1, dx, dy, 4)
+local function choose_town_crossroads_sequence()
+    -- There are 16 frames of video on the laserdisc with the 4 possible choices, with all possible combinations of completed ones dimmed out.
+
+    -- sequences are SCJB (Saloon, Corral, Jail, Bank), with capital letters if completed, lowercase if not.
+    local saloon = scene_manager.completed_saloon and "S" or "s"
+    local corral = scene_manager.completed_corral and "C" or "c"
+    local jail = scene_manager.completed_jail and "J" or "j"
+    local bank = scene_manager.completed_bank and "B" or "b"
+
+    return "choices_" .. saloon .. corral .. jail .. bank;
+end
+
+-- player didn't pick? Pick an uncompleted one for them.
+local function choose_town_crossroads_default()
+    if not scene_manager.completed_corral then
+        start_scene("corral")
+    elseif not scene_manager.completed_saloon then
+        start_scene("saloon")
+    elseif not scene_manager.completed_jail then
+        start_scene("jail")
+    else
+        start_scene("bank")
+    end
+end
+
+local function choose_saloon_start_sequence()
+    scene_manager.barkeeper_killed = false   -- reset when (re)starting the Saloon scene.
+    if scene_manager.saloon_ambush_passed then
+        return "enter_saloon"
+    end
+    return "ambush";
+end
+
+local function saloon_ambush_passed()
+    scene_manager.saloon_ambush_passed = true
+    return "enter_saloon_delay"
+end
+
+local function barkeeper_dies()
+    scene_manager.barkeeper_killed = true
+    return "barkeeper_dies"
+end
+
+local function choose_saloon_complete_sequence()
+    scene_manager.completed_saloon = true  -- mark this level as completed.
+    if scene_manager.barkeeper_killed then
+        return "stage_complete_barkeeper_dead"
+    end
+    return "stage_complete_barkeeper_alive"
 end
 
 local function handle_gameover()
@@ -905,6 +1000,16 @@ local function handle_game_continued()
     local died_in_scene_name = scene_manager.died_in_scene_name
     scene_manager.died_in_scene_name = nil  -- reset this until next death.
     start_scene(died_in_scene_name)  -- !!! FIXME: do some of these bring you back to choice scenes to pick a different scene instead?
+end
+
+local function overlay_lives_left()
+    local lives_left = scene_manager.lives_left
+    if (lives_left < 0) then lives_left = 0 elseif (lives_left > 9) then lives_left = 9 end
+    local sw = 13 * 4  -- quadrupled to look better
+    local sh = 29 * 4  -- quadrupled to look better
+    local dx = (DirkSimple.video_width - sw) / 2   -- center it
+    local dy = DirkSimple.video_height * 0.27
+    draw_number(lives_left, 1, dx, dy, 4)
 end
 
 local function overlay_credits_page1()
@@ -975,6 +1080,8 @@ end
 
 -- The scene table!
 scenes = {
+
+    -- Plays in a loop before the player has started a game.
     attract_mode = {
         start = {
             timeout = { when=0, nextsequence="attract_movie" },
@@ -1098,6 +1205,7 @@ scenes = {
         },
     },
 
+    -- Shooting bottles off a fence as a tutorial before the actual game.
     tutorial = {
         start = {
             timeout = { when=0, nextsequence="lets_see" },
@@ -1192,14 +1300,15 @@ scenes = {
         }
     },
 
+    -- First level in game; prospector greets you, you save his life. Twice.
     level1 = {
         start = {
             start_time = laserdisc_frame_to_ms(0),
+            timeout = { when=laserdisc_frame_to_ms(1001), nextsequence="actual_fight" },
             gunfire_disabled = true,  -- there's nothing to shoot in this piece, but we don't want to make sound or spend a bullet if we shoot to skip ahead.
             actions = {  -- you can skip the scenic view and chatter here by firing the gun. The Singe version does this, I doubt the arcade does.
                 { input="action", from=laserdisc_frame_to_ms(0), to=laserdisc_frame_to_ms(600), nextsequence="skip_to_fight" },
             },
-            timeout = { when=laserdisc_frame_to_ms(1001), nextsequence="actual_fight" },
         },
         skip_to_fight = {  -- do the seek here so actual_fight can be time_laserdisc_noseek() on all paths.
             start_time = time_laserdisc_noseek(),
@@ -1211,8 +1320,9 @@ scenes = {
         },
         first_shooter = {
             start_time = time_laserdisc_noseek(),
+            timeout = { when=laserdisc_frame_to_ms(109), nextsequence="first_shooter_kills" },
             actions = {
-                { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={290, 103, 300, 114}, points=badguy_points+headshot_bonus_points, nextsequence="first_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={290, 103, 300, 114}, points=badguy_points, nextsequence="first_shooter_dies", best=true },
                 { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={285, 114, 306, 138}, points=badguy_points, nextsequence="first_shooter_dies" },
                 { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={285, 146, 291, 163}, points=badguy_points, nextsequence="first_shooter_dies" },
                 { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={286, 137, 306, 147}, points=badguy_points, nextsequence="first_shooter_dies" },
@@ -1221,7 +1331,6 @@ scenes = {
                 { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={280, 159, 285, 176}, points=badguy_points, nextsequence="first_shooter_dies" },
                 { input="action", from=laserdisc_frame_to_ms(90), to=laserdisc_frame_to_ms(109), area={280, 115, 285, 129}, points=badguy_points, nextsequence="first_shooter_dies" },
             },
-            timeout = { when=laserdisc_frame_to_ms(109), nextsequence="first_shooter_kills" },
         },
         first_shooter_dies = {
             start_time = laserdisc_frame_to_ms(1119),
@@ -1233,69 +1342,49 @@ scenes = {
         },
         second_shooter = {
             start_time = time_laserdisc_noseek(),
-            actions = {
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={301, 106, 312, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={296, 123, 317, 155}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={289, 149, 299, 165}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={312, 155, 327, 164}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={285, 165, 296, 171}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={318, 165, 324, 193}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={282, 168, 288, 185}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={279, 177, 285, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={298, 106, 308, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={293, 122, 313, 154}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={289, 147, 298, 164}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={307, 153, 322, 163}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={315, 163, 322, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={294, 106, 305, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={290, 120, 313, 152}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={287, 148, 296, 165}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={306, 152, 321, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={315, 162, 322, 190}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={292, 103, 301, 119}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={287, 119, 310, 151}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={287, 148, 296, 165}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={305, 150, 317, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={314, 162, 321, 190}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={291, 102, 300, 118}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={286, 116, 309, 149}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={286, 148, 296, 163}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={304, 148, 317, 160}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={315, 160, 322, 188}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={291, 102, 300, 118}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={287, 115, 310, 147}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={286, 148, 296, 163}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={304, 148, 317, 160}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={315, 160, 322, 188}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(15), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={291, 101, 299, 116}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={287, 115, 310, 147}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={286, 148, 295, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={305, 147, 317, 160}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={283, 162, 291, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={314, 160, 321, 188}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
-                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
-            },
             timeout = { when=laserdisc_frame_to_ms(19), nextsequence="second_shooter_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={279, 177, 285, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={282, 168, 288, 185}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={285, 165, 296, 171}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={289, 149, 299, 165}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={296, 123, 317, 155}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={301, 106, 312, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={312, 155, 327, 164}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={318, 165, 324, 193}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(16), area={277, 177, 282, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(16), area={280, 167, 286, 184}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(14), area={283, 162, 293, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={289, 147, 298, 164}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={293, 122, 313, 154}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={298, 106, 308, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={307, 153, 322, 163}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={315, 163, 322, 191}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(7), area={287, 148, 296, 165}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={290, 120, 313, 152}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={294, 106, 305, 122}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={306, 152, 321, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(5), to=laserdisc_frame_to_ms(6), area={315, 162, 322, 190}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={287, 119, 310, 151}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={292, 103, 301, 119}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={305, 150, 317, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(7), to=laserdisc_frame_to_ms(9), area={314, 162, 321, 190}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(13), area={286, 116, 309, 149}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(14), area={286, 148, 296, 163}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(14), area={291, 102, 300, 118}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(14), area={304, 148, 317, 160}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(14), area={315, 160, 322, 188}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(14), to=laserdisc_frame_to_ms(16), area={287, 115, 310, 147}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={283, 162, 291, 168}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={286, 148, 295, 162}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={291, 101, 299, 116}, points=badguy_points, nextsequence="second_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={305, 147, 317, 160}, points=badguy_points, nextsequence="second_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(16), to=laserdisc_frame_to_ms(19), area={314, 160, 321, 188}, points=badguy_points, nextsequence="second_shooter_dies" },
+            },
         },
         second_shooter_dies = {
             start_time = laserdisc_frame_to_ms(1243),
-            timeout = { when=laserdisc_frame_to_ms(585), nextsequence=nil }
+            timeout = { when=laserdisc_frame_to_ms(585), nextscene="town_crossroads" }
         },
         second_shooter_kills = {
             start_time = laserdisc_frame_to_ms(2150),
@@ -1303,6 +1392,579 @@ scenes = {
         },
     },
 
+    -- Player must choose between saloon, corral, jail, and bank scenes to continue.
+    town_crossroads = {
+        start = {
+            start_time = time_laserdisc_noseek(),
+            timeout = { when=0, nextsequence=choose_town_crossroads_sequence },
+        },
+
+        -- (each marks an unused choice as "best" so god_mode will progress through this. Saloon is always chosen as best if available, so you'll have the keys when you get to the jail.)
+        choices_scjb = {
+            start_time = laserdisc_frame_to_ms(41089),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+
+        choices_Scjb = {
+            start_time = laserdisc_frame_to_ms(41090),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_sCjb = {
+            start_time = laserdisc_frame_to_ms(41091),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_SCjb = {
+            start_time = laserdisc_frame_to_ms(41092),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_scjB = {
+            start_time = laserdisc_frame_to_ms(41092),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_ScjB = {
+            start_time = laserdisc_frame_to_ms(41093),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_sCjB = {
+            start_time = laserdisc_frame_to_ms(41094),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_SCjB = {
+            start_time = laserdisc_frame_to_ms(41095),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 120, 180, 240}, nextscene="jail", best=true },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_scJb = {
+            start_time = laserdisc_frame_to_ms(41096),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral" },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_ScJb = {
+            start_time = laserdisc_frame_to_ms(41097),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_sCJb = {
+            start_time = laserdisc_frame_to_ms(41098),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_SCJb = {
+            start_time = laserdisc_frame_to_ms(41099),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 120, 360, 240}, nextscene="bank", best=true },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_scJB = {
+            start_time = laserdisc_frame_to_ms(41100),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true  },
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral" },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_ScJB = {
+            start_time = laserdisc_frame_to_ms(41101),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={0, 0, 180, 120}, nextscene="corral", best=true },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_sCJB = {
+            start_time = laserdisc_frame_to_ms(41102),
+            is_single_frame = true,
+            actions = {
+                { input="action", from=time_to_ms(0, 0), to=time_to_ms(30, 0), area={180, 0, 360, 120}, nextscene="saloon", best=true },
+            },
+            timeout = { when=time_to_ms(24, 0), interrupt=choose_town_crossroads_default },
+        },
+
+        choices_SCJB = {  -- ... I assume this one is never hit...? I dropped the timeout to three seconds.
+            start_time = laserdisc_frame_to_ms(41103),
+            is_single_frame = true,
+            timeout = { when=time_to_ms(3, 0), interrupt=choose_town_crossroads_default },
+        },
+    },
+
+    -- the saloon scene; kill the dudes, take the keys to the jail. Try to save the barkeeper.
+    saloon = {
+        start = {
+            start_time = time_laserdisc_noseek(),
+            timeout = { when=0, nextsequence=choose_saloon_start_sequence },
+        },
+
+        -- First time through the level, Mag Dog has a shooter on a roof on your way to the saloon. You skip this part once you pass it, if you die later in the level.
+        ambush = {
+            start_time = laserdisc_frame_to_ms(4460),
+            timeout = { when=laserdisc_frame_to_ms(147), nextsequence="rooftop_shooter_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(64), to=laserdisc_frame_to_ms(66), area={147, 48, 153, 56}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(68), to=laserdisc_frame_to_ms(69), area={145, 45, 151, 58}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(70), to=laserdisc_frame_to_ms(71), area={144, 45, 149, 61}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(72), to=laserdisc_frame_to_ms(73), area={142, 45, 147, 61}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={140, 43, 145, 61}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(76), to=laserdisc_frame_to_ms(77), area={138, 41, 143, 59}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(78), to=laserdisc_frame_to_ms(79), area={136, 42, 141, 60}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(80), to=laserdisc_frame_to_ms(82), area={136, 43, 141, 61}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(118), to=laserdisc_frame_to_ms(146), area={134, 41, 141, 49}, points=badguy_points, nextsequence="rooftop_shooter_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(118), to=laserdisc_frame_to_ms(146), area={133, 49, 147, 67}, points=badguy_points, nextsequence="rooftop_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(118), to=laserdisc_frame_to_ms(119), area={135, 67, 142, 90}, points=badguy_points, nextsequence="rooftop_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(118), to=laserdisc_frame_to_ms(146), area={144, 81, 160, 86}, points=badguy_points, nextsequence="rooftop_shooter_dies" },
+                { input="action", from=laserdisc_frame_to_ms(120), to=laserdisc_frame_to_ms(146), area={138, 67, 144, 90}, points=badguy_points, nextsequence="rooftop_shooter_dies" },
+            },
+        },
+
+        rooftop_shooter_dies = {
+            start_time = laserdisc_frame_to_ms(4608),
+            timeout = { when=laserdisc_frame_to_ms(836), nextsequence=saloon_ambush_passed }  -- mark this task as completed, move on to enter_saloon_delay.
+        },
+
+        rooftop_shooter_kills = {
+            start_time = laserdisc_frame_to_ms(8000),
+            timeout = { when=laserdisc_frame_to_ms(54), nextscene="undertaker_normal" }
+        },
+
+        -- first time through, after the ambush, you stare at the door for three seconds before going in. There's a skull you can shoot during this time.
+        enter_saloon_delay = {
+            start_time = laserdisc_frame_to_ms(5440),
+            is_single_frame = true,
+            timeout = { when=time_to_ms(3, 0), nextsequence="enter_saloon" },
+            actions = {
+                { input="action", from=0, to=time_to_ms(3, 0), area={85, 115, 99, 135}, points=spittoon_points, nextsequence="enter_saloon" },
+            }
+        },
+
+        -- this is from when you enter the saloon until Jocko tries to kill the barkeeper.
+        enter_saloon = {
+            start_time = laserdisc_frame_to_ms(5470),
+            timeout = { when=laserdisc_frame_to_ms(733), nextsequence=barkeeper_dies },  -- barkeeper_dies, the function, so it can set the flag before going to "barkeeper_dies" the sequence.
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(720), to=laserdisc_frame_to_ms(721), area={38, 73, 45, 101}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(720), to=laserdisc_frame_to_ms(724), area={46, 57, 68, 120}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(720), to=laserdisc_frame_to_ms(725), area={50, 39, 68, 57}, points=badguy_points, nextsequence="jocko_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(720), to=laserdisc_frame_to_ms(733), area={54, 120, 71, 162}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(721), to=laserdisc_frame_to_ms(722), area={32, 72, 46, 88}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(722), to=laserdisc_frame_to_ms(723), area={35, 70, 48, 86}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(723), to=laserdisc_frame_to_ms(724), area={37, 72, 46, 84}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(724), to=laserdisc_frame_to_ms(725), area={41, 67, 47, 94}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(725), to=laserdisc_frame_to_ms(726), area={43, 65, 48, 92}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(725), to=laserdisc_frame_to_ms(726), area={48, 57, 68, 120}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(726), to=laserdisc_frame_to_ms(727), area={41, 63, 65, 108}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(726), to=laserdisc_frame_to_ms(733), area={45, 41, 62, 63}, points=badguy_points, nextsequence="jocko_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(726), to=laserdisc_frame_to_ms(733), area={48, 104, 68, 120}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(726), to=laserdisc_frame_to_ms(727), area={65, 85, 82, 94}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(727), to=laserdisc_frame_to_ms(728), area={41, 63, 64, 108}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(727), to=laserdisc_frame_to_ms(728), area={64, 82, 94, 91}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(728), to=laserdisc_frame_to_ms(729), area={41, 63, 67, 108}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(728), to=laserdisc_frame_to_ms(729), area={64, 80, 95, 89}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(729), to=laserdisc_frame_to_ms(730), area={40, 63, 66, 107}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(729), to=laserdisc_frame_to_ms(730), area={66, 70, 75, 78}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(729), to=laserdisc_frame_to_ms(730), area={66, 78, 97, 88}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(730), to=laserdisc_frame_to_ms(733), area={40, 61, 66, 106}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(730), to=laserdisc_frame_to_ms(733), area={65, 63, 74, 97}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(730), to=laserdisc_frame_to_ms(731), area={73, 76, 107, 84}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(731), to=laserdisc_frame_to_ms(733), area={73, 72, 107, 80}, points=badguy_points, nextsequence="jocko_dies" },
+             },
+        },
+
+        -- uhoh, Jocko killed the barkeeper! But you still get 17 frames to shoot Jocko before the keyholder shoots you, which will distract him so you can shoot him, too.
+        barkeeper_dies = {
+            start_time = laserdisc_frame_to_ms(8056),
+            timeout = { when=laserdisc_frame_to_ms(260), nextscene="undertaker_normal" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(17), area={38, 61, 64, 106}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(17), area={45, 41, 62, 63}, points=badguy_points, nextsequence="jocko_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(11), area={48, 104, 68, 120}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(17), area={54, 120, 71, 162}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(17), area={64, 59, 73, 93}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(8), to=laserdisc_frame_to_ms(9), area={73, 68, 107, 76}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(9), to=laserdisc_frame_to_ms(10), area={73, 66, 107, 74}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(10), to=laserdisc_frame_to_ms(11), area={73, 64, 106, 72}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(11), to=laserdisc_frame_to_ms(12), area={73, 62, 106, 69}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(12), to=laserdisc_frame_to_ms(17), area={47, 104, 67, 120}, points=badguy_points, nextsequence="jocko_dies" },
+                { input="action", from=laserdisc_frame_to_ms(13), to=laserdisc_frame_to_ms(17), area={73, 60, 106, 68}, points=badguy_points, nextsequence="jocko_dies" },
+            },
+        },
+
+        -- if you kill Jocko (either before or after he kills the barkeeper), you end up here. Keyholder is distracted for a moment before trying to shoot you. Get him first!
+        jocko_dies = {
+            start_time = laserdisc_frame_to_ms(6203),
+            timeout = { when=laserdisc_frame_to_ms(56), nextsequence="keyholder_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(27), to=laserdisc_frame_to_ms(49), area={150, 130, 165, 193}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(27), to=laserdisc_frame_to_ms(28), area={152, 20, 174, 48}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(27), to=laserdisc_frame_to_ms(28), area={154, 48, 194, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(27), to=laserdisc_frame_to_ms(35), area={155, 93, 189, 131}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(27), to=laserdisc_frame_to_ms(31), area={175, 130, 196, 197}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(28), to=laserdisc_frame_to_ms(29), area={155, 20, 176, 48}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(28), to=laserdisc_frame_to_ms(30), area={160, 48, 191, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(30), to=laserdisc_frame_to_ms(32), area={156, 20, 174, 48}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(31), to=laserdisc_frame_to_ms(32), area={158, 48, 189, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(32), to=laserdisc_frame_to_ms(33), area={178, 131, 199, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={156, 21, 174, 49}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={156, 48, 187, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={180, 131, 201, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(35), area={157, 20, 175, 48}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(36), area={154, 48, 187, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(36), area={177, 131, 198, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(36), to=laserdisc_frame_to_ms(37), area={153, 52, 193, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(36), to=laserdisc_frame_to_ms(40), area={154, 93, 188, 131}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(36), to=laserdisc_frame_to_ms(38), area={159, 21, 177, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(36), to=laserdisc_frame_to_ms(38), area={178, 131, 197, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(38), to=laserdisc_frame_to_ms(40), area={150, 52, 194, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(39), to=laserdisc_frame_to_ms(40), area={162, 21, 180, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(39), to=laserdisc_frame_to_ms(43), area={182, 131, 200, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(41), to=laserdisc_frame_to_ms(45), area={154, 53, 198, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(41), to=laserdisc_frame_to_ms(43), area={155, 93, 189, 131}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(41), to=laserdisc_frame_to_ms(42), area={164, 21, 182, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(43), to=laserdisc_frame_to_ms(44), area={166, 20, 184, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(44), to=laserdisc_frame_to_ms(48), area={155, 93, 191, 131}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(44), to=laserdisc_frame_to_ms(46), area={168, 20, 185, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(44), to=laserdisc_frame_to_ms(45), area={188, 130, 200, 197}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(46), to=laserdisc_frame_to_ms(49), area={155, 53, 199, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(46), to=laserdisc_frame_to_ms(47), area={189, 131, 201, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(47), to=laserdisc_frame_to_ms(49), area={168, 21, 185, 53}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(48), to=laserdisc_frame_to_ms(49), area={191, 131, 203, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(49), to=laserdisc_frame_to_ms(56), area={156, 93, 192, 131}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(49), to=laserdisc_frame_to_ms(50), area={192, 131, 204, 198}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(51), area={153, 53, 197, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(56), area={153, 130, 168, 193}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(52), area={165, 21, 183, 54}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={156, 53, 192, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(56), area={187, 132, 196, 152}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={194, 134, 206, 200}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(56), area={154, 53, 186, 93}, points=badguy_points, nextsequence="keyholder_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(56), area={162, 23, 180, 55}, points=badguy_points, nextsequence="keyholder_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(56), area={195, 134, 205, 200}, points=badguy_points, nextsequence="keyholder_dies" },
+            },
+        },
+
+        keyholder_kills = {
+            start_time = laserdisc_frame_to_ms(8318),
+            timeout = { when=laserdisc_frame_to_ms(58), nextscene="undertaker_normal" },
+        },
+
+        -- Keyholder goes down, dude on your left at the table takes a shot.
+        keyholder_dies = {
+            start_time = laserdisc_frame_to_ms(6259),
+            timeout = { when=laserdisc_frame_to_ms(80), nextsequence="cardplayer_left_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(31), to=laserdisc_frame_to_ms(55), area={45, 118, 53, 137}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(31), to=laserdisc_frame_to_ms(50), area={50, 81, 76, 105}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(31), to=laserdisc_frame_to_ms(50), area={57, 71, 68, 81}, points=badguy_points, nextsequence="cardplayer_left_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={42, 89, 48, 102}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(59), area={49, 80, 75, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(54), area={57, 72, 68, 80}, points=badguy_points, nextsequence="cardplayer_left_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(54), area={43, 92, 50, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(55), to=laserdisc_frame_to_ms(56), area={45, 93, 51, 105}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(55), to=laserdisc_frame_to_ms(60), area={56, 69, 67, 81}, points=badguy_points, nextsequence="cardplayer_left_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(58), area={45, 93, 52, 105}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(58), area={47, 118, 54, 137}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(59), to=laserdisc_frame_to_ms(60), area={47, 119, 55, 138}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(60), to=laserdisc_frame_to_ms(72), area={47, 120, 54, 139}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(60), to=laserdisc_frame_to_ms(61), area={49, 80, 74, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(61), to=laserdisc_frame_to_ms(68), area={49, 84, 74, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(61), to=laserdisc_frame_to_ms(80), area={56, 69, 67, 84}, points=badguy_points, nextsequence="cardplayer_left_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(69), to=laserdisc_frame_to_ms(75), area={48, 84, 73, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(73), to=laserdisc_frame_to_ms(80), area={47, 115, 54, 136}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+                { input="action", from=laserdisc_frame_to_ms(76), to=laserdisc_frame_to_ms(80), area={50, 84, 73, 104}, points=badguy_points, nextsequence="cardplayer_left_dies" },
+            },
+        },
+
+        cardplayer_left_kills = {
+            start_time = laserdisc_frame_to_ms(8378),
+            timeout = { when=laserdisc_frame_to_ms(52), nextscene="undertaker_normal" },
+        },
+
+        -- First card player hits the floor, so the second one decides to shoot his shot.
+        cardplayer_left_dies = {
+            start_time = laserdisc_frame_to_ms(6339),
+            timeout = { when=laserdisc_frame_to_ms(91), nextsequence="cardplayer_right_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(22), area={94, 119, 100, 130}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(22), area={103, 84, 122, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(5), area={108, 68, 120, 84}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(22), area={121, 84, 128, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(33), area={122, 115, 127, 145}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(6), to=laserdisc_frame_to_ms(22), area={105, 68, 118, 84}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(23), to=laserdisc_frame_to_ms(32), area={92, 119, 101, 126}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(23), to=laserdisc_frame_to_ms(32), area={94, 126, 103, 136}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(23), to=laserdisc_frame_to_ms(32), area={102, 84, 129, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(23), to=laserdisc_frame_to_ms(25), area={106, 67, 117, 83}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(23), to=laserdisc_frame_to_ms(32), area={126, 111, 132, 119}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(26), to=laserdisc_frame_to_ms(31), area={106, 68, 118, 84}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(32), to=laserdisc_frame_to_ms(33), area={103, 68, 115, 84}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={96, 119, 101, 135}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={103, 84, 122, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={122, 88, 129, 105}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(33), to=laserdisc_frame_to_ms(34), area={126, 97, 133, 104}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(35), area={97, 119, 101, 136}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(35), area={101, 71, 113, 86}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(35), area={106, 85, 126, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(35), area={120, 115, 126, 145}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(34), to=laserdisc_frame_to_ms(40), area={125, 93, 131, 106}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(37), area={97, 119, 101, 130}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(38), area={100, 71, 112, 86}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(36), area={106, 86, 126, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(35), to=laserdisc_frame_to_ms(37), area={120, 116, 126, 146}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(36), to=laserdisc_frame_to_ms(37), area={106, 86, 125, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(38), to=laserdisc_frame_to_ms(39), area={96, 119, 101, 130}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(38), to=laserdisc_frame_to_ms(40), area={105, 86, 124, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(38), to=laserdisc_frame_to_ms(39), area={121, 116, 127, 146}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(39), to=laserdisc_frame_to_ms(41), area={99, 71, 111, 86}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(39), to=laserdisc_frame_to_ms(49), area={120, 114, 126, 143}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(40), to=laserdisc_frame_to_ms(48), area={94, 118, 103, 129}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(41), to=laserdisc_frame_to_ms(42), area={104, 86, 123, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(41), to=laserdisc_frame_to_ms(42), area={124, 93, 130, 106}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(42), to=laserdisc_frame_to_ms(43), area={97, 67, 109, 81}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(42), to=laserdisc_frame_to_ms(43), area={101, 81, 120, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(42), to=laserdisc_frame_to_ms(44), area={120, 89, 127, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(43), to=laserdisc_frame_to_ms(44), area={101, 82, 120, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(44), to=laserdisc_frame_to_ms(45), area={97, 66, 109, 80}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(44), to=laserdisc_frame_to_ms(45), area={101, 79, 120, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(45), to=laserdisc_frame_to_ms(46), area={97, 62, 109, 76}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(45), to=laserdisc_frame_to_ms(47), area={99, 77, 119, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(45), to=laserdisc_frame_to_ms(47), area={119, 86, 127, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(47), to=laserdisc_frame_to_ms(48), area={96, 62, 108, 76}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(48), to=laserdisc_frame_to_ms(49), area={96, 60, 108, 75}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(48), to=laserdisc_frame_to_ms(49), area={98, 74, 117, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(48), to=laserdisc_frame_to_ms(49), area={117, 85, 126, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(49), to=laserdisc_frame_to_ms(52), area={94, 118, 103, 126}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(49), to=laserdisc_frame_to_ms(50), area={96, 59, 108, 74}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(51), area={96, 58, 108, 73}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(51), area={98, 73, 117, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(51), area={116, 82, 125, 95}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(50), to=laserdisc_frame_to_ms(52), area={118, 116, 124, 145}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={96, 56, 108, 71}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={97, 71, 116, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(51), to=laserdisc_frame_to_ms(52), area={116, 78, 122, 94}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(52), to=laserdisc_frame_to_ms(53), area={95, 54, 107, 69}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(52), to=laserdisc_frame_to_ms(53), area={97, 69, 116, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(52), to=laserdisc_frame_to_ms(53), area={116, 75, 122, 93}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(55), area={94, 69, 119, 89}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(54), area={96, 53, 106, 68}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(55), area={96, 119, 102, 126}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(55), area={101, 88, 119, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(58), area={117, 115, 122, 145}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(53), to=laserdisc_frame_to_ms(55), area={119, 78, 125, 91}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(54), to=laserdisc_frame_to_ms(55), area={96, 51, 107, 69}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(57), area={94, 66, 119, 88}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(57), area={95, 48, 106, 67}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(57), area={96, 88, 117, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(58), area={97, 119, 104, 127}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(56), to=laserdisc_frame_to_ms(57), area={119, 76, 125, 89}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(57), to=laserdisc_frame_to_ms(58), area={119, 72, 124, 93}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(58), to=laserdisc_frame_to_ms(60), area={93, 62, 118, 87}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(58), to=laserdisc_frame_to_ms(59), area={96, 47, 108, 61}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(58), to=laserdisc_frame_to_ms(59), area={102, 86, 122, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(58), to=laserdisc_frame_to_ms(60), area={117, 74, 126, 86}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(59), to=laserdisc_frame_to_ms(60), area={94, 119, 101, 126}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(59), to=laserdisc_frame_to_ms(60), area={100, 87, 120, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(59), to=laserdisc_frame_to_ms(60), area={116, 123, 121, 139}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(60), to=laserdisc_frame_to_ms(62), area={95, 46, 107, 62}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(60), to=laserdisc_frame_to_ms(61), area={96, 119, 101, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(60), to=laserdisc_frame_to_ms(62), area={117, 121, 122, 138}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(61), to=laserdisc_frame_to_ms(62), area={93, 61, 118, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(61), to=laserdisc_frame_to_ms(62), area={119, 73, 124, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(62), to=laserdisc_frame_to_ms(63), area={91, 119, 96, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(63), to=laserdisc_frame_to_ms(64), area={92, 58, 111, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(63), to=laserdisc_frame_to_ms(64), area={93, 44, 105, 59}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(63), to=laserdisc_frame_to_ms(64), area={112, 62, 117, 78}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(63), to=laserdisc_frame_to_ms(64), area={117, 126, 122, 149}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(63), to=laserdisc_frame_to_ms(64), area={120, 76, 125, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(64), to=laserdisc_frame_to_ms(65), area={89, 119, 94, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(64), to=laserdisc_frame_to_ms(66), area={90, 59, 109, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(64), to=laserdisc_frame_to_ms(65), area={117, 124, 122, 136}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(64), to=laserdisc_frame_to_ms(65), area={118, 76, 123, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(65), to=laserdisc_frame_to_ms(66), area={87, 119, 92, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(65), to=laserdisc_frame_to_ms(66), area={90, 59, 108, 102}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(65), to=laserdisc_frame_to_ms(66), area={92, 44, 104, 59}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(65), to=laserdisc_frame_to_ms(66), area={110, 62, 115, 78}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(65), to=laserdisc_frame_to_ms(66), area={116, 125, 121, 137}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(66), to=laserdisc_frame_to_ms(67), area={117, 76, 122, 104}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(72), area={85, 119, 90, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(68), area={88, 59, 106, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(68), area={89, 44, 101, 59}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(69), area={107, 63, 112, 80}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(69), area={115, 76, 120, 104}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(67), to=laserdisc_frame_to_ms(69), area={115, 124, 120, 136}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(68), to=laserdisc_frame_to_ms(69), area={87, 59, 105, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(68), to=laserdisc_frame_to_ms(69), area={115, 76, 120, 99}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(69), to=laserdisc_frame_to_ms(70), area={85, 59, 104, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(69), to=laserdisc_frame_to_ms(70), area={88, 44, 100, 59}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(70), to=laserdisc_frame_to_ms(71), area={83, 59, 102, 103}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(70), to=laserdisc_frame_to_ms(71), area={106, 62, 111, 75}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(70), to=laserdisc_frame_to_ms(71), area={113, 76, 119, 96}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(71), to=laserdisc_frame_to_ms(72), area={75, 63, 80, 75}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(71), to=laserdisc_frame_to_ms(77), area={83, 57, 102, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(71), to=laserdisc_frame_to_ms(73), area={85, 42, 97, 58}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(71), to=laserdisc_frame_to_ms(72), area={106, 63, 111, 75}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(71), to=laserdisc_frame_to_ms(72), area={112, 76, 117, 95}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(72), to=laserdisc_frame_to_ms(73), area={73, 63, 78, 75}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(72), to=laserdisc_frame_to_ms(77), area={105, 60, 110, 72}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(72), to=laserdisc_frame_to_ms(73), area={112, 71, 117, 91}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(73), to=laserdisc_frame_to_ms(74), area={77, 57, 83, 69}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(73), to=laserdisc_frame_to_ms(74), area={84, 119, 89, 142}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(73), to=laserdisc_frame_to_ms(74), area={99, 119, 106, 142}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={76, 60, 82, 72}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={83, 57, 101, 101}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(77), area={84, 42, 96, 57}, points=badguy_points, nextsequence="cardplayer_right_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={84, 118, 89, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={96, 119, 103, 142}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(74), to=laserdisc_frame_to_ms(75), area={109, 72, 114, 93}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(75), to=laserdisc_frame_to_ms(76), area={75, 64, 82, 77}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(75), to=laserdisc_frame_to_ms(76), area={83, 118, 88, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(75), to=laserdisc_frame_to_ms(76), area={94, 118, 101, 133}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(75), to=laserdisc_frame_to_ms(77), area={108, 72, 113, 93}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(76), to=laserdisc_frame_to_ms(77), area={75, 63, 82, 76}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(76), to=laserdisc_frame_to_ms(77), area={83, 118, 89, 141}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+                { input="action", from=laserdisc_frame_to_ms(76), to=laserdisc_frame_to_ms(77), area={93, 118, 100, 133}, points=badguy_points, nextsequence="cardplayer_right_dies" },
+            },
+        },
+
+        cardplayer_right_kills = {
+            start_time = laserdisc_frame_to_ms(8432),
+            timeout = { when=laserdisc_frame_to_ms(60), nextscene="undertaker_normal" },
+        },
+
+        -- Second card player joins his buddy, guy all the way on the back stairs steps up to the plate.
+        cardplayer_right_dies = {
+            start_time = laserdisc_frame_to_ms(6430),
+            timeout = { when=laserdisc_frame_to_ms(120), nextsequence="backstairs_kills" },
+            actions = {
+                { input="action", from=laserdisc_frame_to_ms(0), to=laserdisc_frame_to_ms(1), area={77, 57, 83, 69}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(0), to=laserdisc_frame_to_ms(1), area={84, 119, 89, 142}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(0), to=laserdisc_frame_to_ms(1), area={99, 119, 106, 142}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={76, 60, 82, 72}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={83, 57, 101, 101}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(4), area={84, 42, 96, 57}, points=badguy_points, nextsequence="backstairs_dies", best=true },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={84, 118, 89, 141}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={96, 119, 103, 142}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(1), to=laserdisc_frame_to_ms(2), area={109, 72, 114, 93}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(2), to=laserdisc_frame_to_ms(3), area={75, 64, 82, 77}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(2), to=laserdisc_frame_to_ms(3), area={83, 118, 88, 141}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(2), to=laserdisc_frame_to_ms(3), area={94, 118, 101, 133}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(2), to=laserdisc_frame_to_ms(4), area={108, 72, 113, 93}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={75, 63, 82, 76}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={83, 118, 89, 141}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(3), to=laserdisc_frame_to_ms(4), area={93, 118, 100, 133}, points=badguy_points, nextsequence="backstairs_dies" },
+                { input="action", from=laserdisc_frame_to_ms(30), to=laserdisc_frame_to_ms(121), area={168, 23, 181, 38}, points=badguy_points, nextsequence="backstairs_dies", best=true },
+            },
+        },
+
+        backstairs_kills = {
+            start_time = laserdisc_frame_to_ms(8494),
+            timeout = { when=laserdisc_frame_to_ms(70), nextscene="undertaker_normal" },
+        },
+
+        -- oops, all out of dudes. Watch this one die in slow motion, then whoever is still alive will hand you the keys to the jail.
+        backstairs_dies = {
+            start_time = laserdisc_frame_to_ms(6550),
+            timeout = { when=laserdisc_frame_to_ms(190), nextsequence="stage_complete" },
+        },
+
+        stage_complete = {
+            start_time = time_laserdisc_noseek(),
+            timeout = { when=0, nextsequence=choose_saloon_complete_sequence },  -- this will mark the level as completed, and decide who hands you the keys.
+        },
+
+        -- bartender thanks you, hands you the jail keys.
+        stage_complete_barkeeper_alive = {
+            start_time = laserdisc_frame_to_ms(6740),
+            timeout = { when=laserdisc_frame_to_ms(726), nextscene="town_crossroads" }
+        },
+
+        -- girl thanks you, hands you the jail keys.
+        stage_complete_barkeeper_dead = {
+            start_time = laserdisc_frame_to_ms(7467),
+            timeout = { when=laserdisc_frame_to_ms(532), nextscene="town_crossroads" }
+        },
+    },
+
+    corral = {
+    },
+
+    jail = {
+    },
+
+    bank = {
+    },
+
+    -- The usual undertaker scenes. There are other scenes for special cases, like shooting civilians, etc.
     undertaker_normal = {
         start = {
             start_time = time_laserdisc_noseek(),
@@ -1367,6 +2029,7 @@ scenes = {
         }
     },
 
+    -- Insert coins and/or hit start before a timeout to continue after a game over.
     continue_screen = {
         start = {
             start_time = laserdisc_frame_to_ms(41108),
@@ -1381,6 +2044,7 @@ scenes = {
         }
     },
 
+    -- The final Game Over screen before it goes back to attract mode.
     game_over = {
         start = {
             start_time = laserdisc_frame_to_ms(41408),
@@ -1393,4 +2057,3 @@ scenes = {
 }
 
 -- end of maddog.lua ...
-
