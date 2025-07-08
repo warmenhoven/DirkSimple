@@ -578,7 +578,7 @@ local function check_actions(inputs)
                 gunsound = "empty"
             else
                 -- flash the screen white for one frame when firing to give some weight to it. I learned this trick from The Fablemans, lol.
-                DirkSimple.clear_screen(255, 255, 255)
+                DirkSimple.clear_screen(255, 255, 255, true)
                 gunsound = "shot"
                 if not infinite_bullets then
                     scene_manager.loaded_bullets = scene_manager.loaded_bullets - 1

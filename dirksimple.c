@@ -59,6 +59,7 @@ typedef struct RenderCommand
         struct
         {
             uint8_t r, g, b;
+            int one_frame_flash;
         } clear;
         struct
         {
@@ -1002,6 +1003,7 @@ static int luahook_DirkSimple_clear_screen(lua_State *L)
     cmd->data.clear.r = (uint8_t) lua_tonumber(L, 1);
     cmd->data.clear.g = (uint8_t) lua_tonumber(L, 2);
     cmd->data.clear.b = (uint8_t) lua_tonumber(L, 3);
+    cmd->data.clear.one_frame_flash = lua_toboolean(L, 4) ? 1 : 0;
     return 0;
 }
 
@@ -1707,10 +1709,15 @@ static void send_rendering_primitives(void)
 {
     DirkSimple_beginframe();
     for (int i = 0; i < GNumRenderCommands; i++) {
-        const RenderCommand *cmd = &GRenderCommands[i];
+        RenderCommand *cmd = &GRenderCommands[i];
         switch (cmd->prim) {
             case RENDPRIM_CLEAR:
-                DirkSimple_clearscreen(cmd->data.clear.r, cmd->data.clear.g, cmd->data.clear.b);
+                if (cmd->data.clear.one_frame_flash >= 0) {
+                    DirkSimple_clearscreen(cmd->data.clear.r, cmd->data.clear.g, cmd->data.clear.b);
+                    if (cmd->data.clear.one_frame_flash == 1) {
+                        cmd->data.clear.one_frame_flash = -1;
+                    }
+                }
                 break;
             case RENDPRIM_RECT:
                 DirkSimple_drawrect(cmd->data.rect.x, cmd->data.rect.y, cmd->data.rect.w, cmd->data.rect.h,
