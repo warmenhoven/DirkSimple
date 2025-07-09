@@ -19,6 +19,7 @@ local show_hitboxes = false  -- if true, draw a rectangle around where you can s
 local show_crosshairs = true -- if false, don't draw the crosshairs (useful if you have a real lightgun instead of a mouse).
 local reload_on_action2 = false -- if true, right mouse clicks will reload; the Sinden Lightgun sends a right click when pointing offscreen and firing.
 local infinite_bullets = false -- if true, firing the gun doesn't cost a bullet, so you never need to reload.
+local show_gun_flash = true -- if true, we clear the screen to white for one frame when the player fires his gun.
 
 DirkSimple.cvars = {
     { name="starting_lives", desc="Number of lives player starts with", values="5|4|3|2|1", setter=function(name, value) starting_lives = DirkSimple.to_int(value) end },
@@ -28,6 +29,7 @@ DirkSimple.cvars = {
     { name="skip_undertaker", desc="Skip undertaker scenes", values="false|true", setter=function(name, value) skip_undertaker = DirkSimple.to_bool(value) end },
     { name="show_hitboxes", desc="Show hitboxes", values="false|true", setter=function(name, value) show_hitboxes = DirkSimple.to_bool(value) end },
     { name="show_crosshairs", desc="Show crosshairs (turn off for real lightguns)", values="true|false", setter=function(name, value) show_crosshairs = DirkSimple.to_bool(value) end },
+    { name="show_gun_flash", desc="Flash the screen white when player fires gun", values="true|false", setter=function(name, value) show_gun_flash = DirkSimple.to_bool(value) end },
     { name="reload_on_action2", desc="Reload with right mouse click (turn on for Sinden lightgun, etc)", values="false|true", setter=function(name, value) reload_on_action2 = DirkSimple.to_bool(value) end },
     { name="infinite_bullets", desc="Shooting the gun doesn't cost a bullet, so no reloads needed", values="false|true", setter=function(name, value) infinite_bullets = DirkSimple.to_bool(value) end },
 }
@@ -578,7 +580,9 @@ local function check_actions(inputs)
                 gunsound = "empty"
             else
                 -- flash the screen white for one frame when firing to give some weight to it. I learned this trick from The Fablemans, lol.
-                DirkSimple.clear_screen(255, 255, 255)
+                if show_gun_flash then
+                    DirkSimple.clear_screen(255, 255, 255)
+                end
                 gunsound = "shot"
                 if not infinite_bullets then
                     scene_manager.loaded_bullets = scene_manager.loaded_bullets - 1
