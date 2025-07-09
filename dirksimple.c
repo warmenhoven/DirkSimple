@@ -1687,6 +1687,33 @@ static void call_lua_tick(lua_State *L, uint64_t ticks, uint64_t clipstartticks,
     collect_lua_garbage(L);  // we can move this to start_clip if it turns out to be too heavy.
 }
 
+static void call_lua_seektick(lua_State *L, uint64_t ticks, uint64_t inputbits, float pointerx, float pointery, int *already_called)
+{
+    if (*already_called) {
+        return;
+    }
+
+    lua_getglobal(L, DIRKSIMPLE_LUA_NAMESPACE);
+    if (!lua_istable(L, -1)) {  // namespace is sane?
+        DirkSimple_panic("DirkSimple Lua namespace is not a table!");
+    }
+    lua_getfield(L, -1, "seek_tick");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 2);  // pop the namespace and not-function object.
+    } else {
+        *already_called = 1;  // function actually exists, count it as the tick for this frame.
+
+        GNumRenderCommands = 0;  // clear rendering commands from previous frame, Lua code will replace them.
+        lua_pushnumber(L, (lua_Number) ticks);
+        push_inputs_table(L, inputbits, pointerx, pointery);
+        lua_call(L, 2, 0);  // this will pop the function and args
+        lua_pop(L, 1);  // pop the namespace
+
+        // Clean up any Lua tick waste.
+        collect_lua_garbage(L);  // we can move this to start_clip if it turns out to be too heavy.
+    }
+}
+
 static const char *pixfmtstr(const THEORAPLAY_VideoFormat pixfmt)
 {
     switch (pixfmt) {
@@ -1885,22 +1912,26 @@ static void DirkSimple_tick_impl(uint64_t monotonic_ms, uint64_t inputbits, floa
 
     if (GDiscLagUntilTicks) {
         if (GDiscLagUntilTicks > GTicks) {
+            call_lua_seektick(L, GTicks, inputbits, pointerx, pointery, &called_lua_tick);
             return;  // we're faking the stall while the laserdisc player seeks to a new position. Done for now.
         }
         GDiscLagUntilTicks = 0;
     }
 
-    // has seek completed? Sync us back up.
-    if (GPendingVideoFrame && (GClipStartTicks == 0)) {
-        GClipStartTicks = GTicks;
-        GSeekToTicksOffset = ((int64_t) GTicks) - ((int64_t) GClipStartMs);
-        if (GShowingSingleFrame) {
-            DirkSimple_discvideo(GPendingVideoFrame->pixels);
-            THEORAPLAY_freeVideo(GPendingVideoFrame);
-            GPendingVideoFrame = NULL;
+    if (!GClipStartTicks) {  // seek still pending?
+        if (!GPendingVideoFrame) {  // not ready yet, call Lua seek_tick.
+            call_lua_seektick(L, GTicks, inputbits, pointerx, pointery, &called_lua_tick);
+        } else {  // seek completed? Sync us back up.
+            GClipStartTicks = GTicks;
+            GSeekToTicksOffset = ((int64_t) GTicks) - ((int64_t) GClipStartMs);
+            if (GShowingSingleFrame) {
+                DirkSimple_discvideo(GPendingVideoFrame->pixels);
+                THEORAPLAY_freeVideo(GPendingVideoFrame);
+                GPendingVideoFrame = NULL;
+            }
+            // we didn't call the tick earlier in this function because we were still waiting; do it now that the seek is resolved.
+            call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery, &called_lua_tick);
         }
-        // we didn't call the tick earlier in this function because we were still waiting; do it now that the seek is resolved.
-        call_lua_tick(L, GTicks, (GTicks - GClipStartTicks), inputbits, pointerx, pointery, &called_lua_tick);
     }
 
     if (!GShowingSingleFrame) {

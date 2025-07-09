@@ -441,6 +441,26 @@ local function draw_available_credits()
     end
 end
 
+local function draw_ui(inputs)
+    if (scene_manager ~= nil) and (scene_manager.current_sequence ~= nil) then
+        if scene_manager.current_sequence.overlay ~= nil then
+            scene_manager.current_sequence.overlay()
+        end
+        if not scene_manager.current_sequence.hud_disabled then
+            draw_hud()
+        end
+        if scene_manager.current_sequence.show_credits then
+            draw_available_credits()
+        end
+        if show_hitboxes then
+            draw_hitboxes()
+        end
+        if not scene_manager.current_sequence.crosshairs_disabled then
+            draw_crosshair(inputs)
+        end
+    end
+end
+
 local function setup_scene_manager()
     -- save off existing credits value, since we reinit when starting a game and would lose this.
     -- (this is part of the serialized state, though, so we need it to be in scene_manager and not a global).
@@ -564,12 +584,17 @@ local function crosshairs_in_area(area)
     return (x >= (area[1] / 360.0)) and (y >= (area[2] / 240.0)) and (x < (area[3] / 360.0)) and (y < (area[4] / 240.0))
 end
 
-local function check_actions(inputs)
+-- called during both tick and seek_tick.
+local function check_actions_always(inputs)
     -- we don't care about inserting coins, but we'll play the sound if you
     -- hit the coinslot button and keep track of "credits"
     if inputs.pressed["coinslot"] then
         scene_manager.credits = scene_manager.credits + 1
         DirkSimple.play_sound("arcadecoin")
+    end
+
+    if (scene_manager == nil) or (scene_manager.current_sequence == nil) then
+        return
     end
 
     if not scene_manager.current_sequence.crosshairs_disabled and not scene_manager.current_sequence.gunfire_disabled and not god_mode then
@@ -617,6 +642,10 @@ local function check_actions(inputs)
             end
         end
     end
+end
+
+local function check_actions(inputs)
+    check_actions_always(inputs)
 
     if accepted_input ~= nil then
         return true  -- ignore all input until end of sequence.
@@ -707,6 +736,7 @@ local function check_timeout()
     end
 end
 
+
 DirkSimple.serialize = function()
     if not scene_manager.initialized then
         setup_scene_manager()   -- just so we can serialize a default state.
@@ -787,6 +817,11 @@ DirkSimple.unserialize = function(state)
     return true
 end
 
+DirkSimple.seek_tick = function(ticks, inputs)
+    check_actions_always(inputs)
+    draw_ui(inputs)
+end
+
 DirkSimple.tick = function(ticks, sequenceticks, inputs)
     xscale = DirkSimple.video_width / 1440.0
     yscale = DirkSimple.video_height / 1080.0
@@ -825,26 +860,10 @@ DirkSimple.tick = function(ticks, sequenceticks, inputs)
         start_attract_mode()
     end
 
-    if scene_manager.current_sequence ~= nil then
-        if scene_manager.current_sequence.overlay ~= nil then
-            scene_manager.current_sequence.overlay()
-        end
-        if not scene_manager.current_sequence.hud_disabled then
-            draw_hud()
-        end
-        if scene_manager.current_sequence.show_credits then
-            draw_available_credits()
-        end
-        if show_hitboxes then
-            draw_hitboxes()
-        end
-        if not scene_manager.current_sequence.crosshairs_disabled then
-            draw_crosshair(inputs)
-        end
-    end
-
     check_actions(inputs)   -- check inputs before timeout, in case an input came through at the last possible moment, even if we're over time.
     check_timeout()
+
+    draw_ui(inputs)
 
     previous_sequence_ticks = scene_manager.current_sequence_ticks
 end
