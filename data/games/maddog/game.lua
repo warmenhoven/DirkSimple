@@ -1600,7 +1600,7 @@ scenes = {
 
         -- first time through, after the ambush, you stare at the door for three seconds before going in. There's a skull you can shoot during this time.
         enter_saloon_delay = {
-            start_time = laserdisc_frame_to_ms(5440),
+            start_time = laserdisc_frame_to_ms(5447),
             is_single_frame = true,
             timeout = { when=time_to_ms(3, 0), nextsequence="enter_saloon" },
             actions = {

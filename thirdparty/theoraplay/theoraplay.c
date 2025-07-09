@@ -552,6 +552,7 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
 
         if (ctx->current_seek_generation != ctx->seek_generation)  // seek requested
         {
+            int seek_only_backwards = 0;
             unsigned long targetms;
             long seekpos;
             long lo, hi;
@@ -628,6 +629,14 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
 
                         if ((ms < targetms) && ((targetms - ms) >= 500) && ((targetms - ms) <= 1000))   // !!! FIXME: tweak this number?
                             found = 1;  // found something close enough to the target!
+                        else if (seek_only_backwards)
+                        {
+                            if ((ms < targetms) && ((targetms - ms) > 1500))
+                            {
+                                printf("Uhoh, seeking backwards totally missed it!\n");
+                                found = 1;   // ugh, we're way past it, give up and just go from here.
+                            }
+                        }
                         else  // adjust binary search position and try again.
                         {
                             const long newpos = (lo / 2) + (hi / 2);
@@ -643,10 +652,28 @@ static int PumpDecoder(TheoraDecoder *ctx, int desired_frames)
                 if (found)
                     break;
 
-                const long newseekpos = (lo / 2) + (hi / 2);
-                if (seekpos == newseekpos)
-                    break;  // we did the best we could, just go from here.
-                seekpos = newseekpos;
+                if (!seek_only_backwards)
+                {
+                    const long newseekpos = (lo / 2) + (hi / 2);
+                    if (seekpos != newseekpos)
+                        seekpos = newseekpos;
+                    else
+                        seek_only_backwards = 1;   // bisecting isn't cutting it, we're probably within a frame or two, so walk backwards now.
+                }
+
+                if (seek_only_backwards)
+                {
+                    const long backwards_increments = 8 * 1024;
+                    if (seekpos >= backwards_increments)
+                        seekpos -= backwards_increments;
+                    else
+                    {
+                        if (seekpos == 0)
+                            break;  // we're at the start of file, we have to give up now.
+                        else
+                            seekpos = 0;
+                    }
+                }
             } // while
 
             // at this point, we have seek'd to something reasonably close to our target. Now decode until we're as close as possible to it.
